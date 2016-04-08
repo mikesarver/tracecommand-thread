@@ -32,6 +32,10 @@ public class HelloController {
 
   private static final Logger LOGGER = LoggerFactory.getLogger(HelloController.class);
 
+  /**
+   * Simple controller using TraceCommand in main thread
+   * the sleuth traceId match across threads
+   */
   @RequestMapping(value = "hello/{id}", method = RequestMethod.GET, produces = "application/json")
   public Hello getHello(@PathVariable("id") String id) {
     LOGGER.info("getHello id {}:", id);
@@ -40,6 +44,15 @@ public class HelloController {
   }
 
 
+  /**
+   * Controller where the TraceCommand is created is a separate thread.
+   * the sleuth traceId do not match across threads
+   *
+   * In this trivial example creating the command can be done in the main thread and passed into the calling thread
+   * A real world example, the first command returns master with collection of ids.  then we have to make a second
+   * call to get the information for each id in the collection.
+   * creating the command for the second call would cause the problem since it is already running in another thread
+   */
   @RequestMapping(value = "hellothread/{id}", method = RequestMethod.GET, produces = "application/json")
   public Hello getHelloThread(@PathVariable("id") String id) throws Exception {
     LOGGER.info("getHelloThread id {}:", id);
@@ -49,6 +62,12 @@ public class HelloController {
     return Hello.builder().greeting(greeting.getMessage()).id(id).build();
   }
 
+  /**
+   * Proposed change to TraceCommand.  Add a second constructor with the parentSpan.
+   * This allows getting the parentSpan on the incoming thread that can be passed along
+   * the tricky part is not having to create a mom's handbag object just to pass long information
+   *
+   */
   @RequestMapping(value = "hellothreadps/{id}", method = RequestMethod.GET, produces = "application/json")
   public Hello getHelloThreadps(@PathVariable("id") String id) throws Exception {
     LOGGER.info("getHelloThread id {}:", id);
