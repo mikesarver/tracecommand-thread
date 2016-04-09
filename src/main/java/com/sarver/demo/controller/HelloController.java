@@ -1,22 +1,25 @@
 package com.sarver.demo.controller;
 
-import java.util.concurrent.CompletableFuture;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cloud.sleuth.Span;
 import org.springframework.cloud.sleuth.TraceKeys;
 import org.springframework.cloud.sleuth.Tracer;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.context.request.async.DeferredResult;
 
 import com.sarver.demo.command.GreetingCommand;
-import com.sarver.demo.command.GreetingCommandParentSpan;
+
+import rx.Observable;
+import rx.functions.Action0;
+import rx.schedulers.Schedulers;
 
 @RestController
 public class HelloController {
@@ -54,29 +57,49 @@ public class HelloController {
    * creating the command for the second call would cause the problem since it is already running in another thread
    */
   @RequestMapping(value = "hellothread/{id}", method = RequestMethod.GET, produces = "application/json")
-  public Hello getHelloThread(@PathVariable("id") String id) throws Exception {
+  public DeferredResult<Hello> getHelloThread(@PathVariable("id") String id) throws Exception {
     LOGGER.info("getHelloThread id {}:", id);
 
-    CompletableFuture<Greeting> g = CompletableFuture.supplyAsync(() -> new GreetingCommand(tracer, traceKeys, restTemplate).execute(), executor);
-    Greeting greeting = g.get();
-    return Hello.builder().greeting(greeting.getMessage()).id(id).build();
+    Observable<Hello> obs =
+        callDefer()
+        .map(g -> Hello.builder().greeting(g.getMessage()).id(id).build());
+
+    DeferredResult<Hello> dr = new DeferredResult<>(500L);
+
+    obs.subscribeOn(Schedulers.io())
+       .subscribe(dr::setResult,
+                  dr::setErrorResult,
+                  setNotFoundWhenResultNotSet(dr));
+    return dr;
+
   }
+
+  @SuppressWarnings({ "rawtypes", "unchecked" })
+  public static Action0 setNotFoundWhenResultNotSet(final DeferredResult result) {
+    return () -> {
+      if (!result.isSetOrExpired()) {
+        result.setResult(new ResponseEntity<>(HttpStatus.NOT_FOUND));
+      }
+    };
+  }
+
+  Observable<Greeting> callDefer() {
+    return Observable.defer(() -> {
+      try {
+        Greeting g = new GreetingCommand(tracer, traceKeys, restTemplate).execute();
+        return g == null ? Observable.empty() : Observable.just(g);
+      } catch (RuntimeException e) {
+        return Observable.error(e);
+      }
+    });
+
+  }
+
 
   /**
-   * Proposed change to TraceCommand.  Add a second constructor with the parentSpan.
-   * This allows getting the parentSpan on the incoming thread that can be passed along
-   * the tricky part is not having to create a mom's handbag object just to pass long information
    *
+   * second controller being called
    */
-  @RequestMapping(value = "hellothreadps/{id}", method = RequestMethod.GET, produces = "application/json")
-  public Hello getHelloThreadps(@PathVariable("id") String id) throws Exception {
-    LOGGER.info("getHelloThread id {}:", id);
-    Span parentSpan = tracer.getCurrentSpan();
-    CompletableFuture<Greeting> g = CompletableFuture.supplyAsync(() -> new GreetingCommandParentSpan(tracer, traceKeys, parentSpan, restTemplate).execute(), executor);
-    Greeting greeting = g.get();
-    return Hello.builder().greeting(greeting.getMessage()).id(id).build();
-  }
-
   @RequestMapping(value = "greeting", method = RequestMethod.GET, produces = "application/json")
   public Greeting getGreeting() {
     LOGGER.info("getGreeting");
